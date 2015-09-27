@@ -1,0 +1,120 @@
+---
+title: "Classification of fitness tracking data"
+author: "Raghavendran Partha"
+date: "Friday, September 25, 2015"
+output: 
+  html_document:
+    keep_md: true
+---
+
+In this project, I build a random forest classifier to classify the type of activity being perfomed, based on various physiological measurements of the subject performing the activity. The random forest classifier built performs robustly, with a very low out-of-sample error rate estimate, and successfully predicts the correct type of activity on 20 unforeseen testing data points.
+
+#Loading data
+```{r, results='hide', cache=TRUE, message=FALSE, warning=FALSE}
+require(data.table)
+require(caret)
+require(dplyr)
+require(reshape2)
+require(ggplot2)
+require(randomForest)
+training_full <- data.frame(fread("pml-training.csv"))
+testing <- data.frame(fread("pml-testing.csv"))
+```
+
+The data and the required packages are loaded. The Machine learning algorithm to be implemented in this project is classification using random forests.
+
+#Data organization
+```{r, cache=TRUE}
+str(training_full)
+```
+
+The dataset consists of 19622 observations of 160 variables. Each row of the dataset corresponds to various measurements of a subject performing a certain type of activity. The type of activity is encoded in the 'classe' variable. In addition to the measurements, auxiliary information such as name of the subject, time of measurement etc are also provided. 
+
+#Data preprocessing
+
+The activity variable 'classe' is stored as a character, and for ease of classification is converted to a factor variable. Additionally, for classification purposes, information other than the actual measurements would be of no use and hence are removed from the dataset. These correspond to the first 7 variables in the dataset.
+
+```{r,cache=TRUE}
+training_full <- mutate(training_full, classe=factor(classe))
+training_full <- select(training_full,-c(1:7))
+```
+
+All measurements in the dataset are numeric. However, some of the variables (columns) contain junk values such as "#div!0". These columns can be identified as the ones with class 'character'. These variables are removed from the dataset
+
+```{r,cache=TRUE}
+inds <- character(0)
+for(ii in 1:ncol(training_full)){
+  inds[ii]<-class(training_full[,ii])
+}
+training_fulls <- select(training_full,which(inds!='character'))
+```
+
+In addition, several variables in the dataset are mostly empty (NA), i.e available only for very few rows. These are removed as well, and only the variables for which numeric values are available for all rows, are retained.
+
+```{r,cache=TRUE}
+fNas <- apply(training_fulls,2,function(x){
+  mean(is.na(x))
+})
+training_fulls <- select(training_fulls,which(fNas==0))
+```
+
+This leaves us with a dataset of 19622 observations of 53 variables, including the 'classe' variable.
+
+```{r,cache=TRUE}
+str(training_fulls)
+```
+
+## Dropping correlated variables
+
+Considering we have a high dimensional dataset of 52 predictors, we could look at the presence of correlated variables, and retaining only uncorrelated variables, thereby leading to a better performance. We ignore the outcome variable 'classe' (53rd column) from the correlation calculations. The findCorrelation function returns the columns which are highly correlated with others in the dataset, and hence can be dropped from the dataset.
+
+The correlations between the variables in the dataset are shown in the following heatmap. This analysis removes 7 variables from the dataset, that are highly correlated (pearson's correlation > 0.9) with other variables.
+
+```{r,cache=TRUE}
+qplot(x=Var1, y=Var2, data=melt(cor(training_fulls[,-53])), fill=value, geom="tile") +scale_fill_gradient(low = "steelblue",high = "white")
+training_fulls <- select(training_fulls,-findCorrelation(cor(as.matrix(training_fulls[,-53]))))
+dim(training_fulls)
+```
+
+# Model building
+
+In this project, I build a random forest model for the classification of the type of activity - variable 'classe'. The full training data is first subdivided into sub-training and validation data, at a 70:30 split
+
+```{r,cache=TRUE}
+inTrain <- createDataPartition(training_fulls$classe, p = 0.7, list = FALSE)
+training <- training_fulls[inTrain,]  
+valid <- training_fulls[-inTrain,]
+```
+
+A random forest classifier is subsequently built on the sub-training data with the a bootstrap 632 method adopted to calculate the out-of-sample error estimate based on 25 bootstrapped resamples. The bootstrap 632 method overcomes some of the bias that often occurs in a naive bootstrap estimate. For each tree only 6 of the variables (sampled randomly) are used to construct the trees, to prevent overfitting.
+
+```{r,cache=TRUE}
+fitControl    <- trainControl(method = 'boot632')
+tgrid           <- expand.grid(mtry=c(6)) 
+model_boo6  <- train(classe ~ ., data = training, method = "rf", trControl = fitControl, tuneGrid = tgrid)
+```
+
+The out-of-sample error estimate is calculated by the model during the training process itself. It does so by using the training data rows that do not belong to a bootstrapped resample, and classifying those samples based on the tree built using that bootstrap resample. The average out-of-sample error estimate is then calculated similarly for all training data rows that were not used for constructing the trees in each bootstrapped resample.
+
+```{r,cache=TRUE}
+model_boo6$finalModel
+```
+
+The out-of-sample estimate (OOB) of error rate is 0.58%. This is the error expected on an unforeseen test set data. We can compare this estimate to the error on the validation dataset that was not used for training the model.
+
+```{r,cache=TRUE}
+validpred <- predict(model_boo6, newdata = valid)
+confusionMatrix(valid$classe,validpred)
+```
+
+The accuracy of the predictions on the validation set is 99.58%, or equivalently the error rate is 0.42% which is comparable to the out-of-sample error rate estimate of the model (0.58%). The value also gives us the confidence in the prediction algorithm, as such a low out-of-sample error estimate would mean the algorithm should perform with reasonable success on a new dataset. 
+
+A model trained on the full training set (no subsetting of training data) is subsequently used to classify the testing samples.
+
+```{r,cache=TRUE}
+model_boo6full  <- train(classe ~ ., data = training_fulls, method = "rf", trControl = fitControl, tuneGrid = tgrid)
+model_boo6full$finalModel
+testPredboo6full <- predict(model_boo6full, newdata = testing)
+```
+
+The out-of-sample error rate estimate is similar to the one observed for the model built on the sub-training dataset. The predictions of the model on the 20 test cases are then submitted online, and compared to the truth, with a 100% success rate in predictions.
